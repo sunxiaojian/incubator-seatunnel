@@ -40,6 +40,7 @@ public class IcebergFilesCommitter implements Serializable {
     private IcebergTableLoader icebergTableLoader;
     private boolean caseSensitive;
     private String branch;
+    private Boolean isCompacting = false;
 
     private IcebergFilesCommitter(SinkConfig config, IcebergTableLoader icebergTableLoader) {
         this.icebergTableLoader = icebergTableLoader;
@@ -55,6 +56,14 @@ public class IcebergFilesCommitter implements Serializable {
     public void doCommit(List<WriteResult> results) {
         TableIdentifier tableIdentifier = icebergTableLoader.getTableIdentifier();
         commit(tableIdentifier, results);
+        doCompaction();
+    }
+
+    private void doCompaction() {
+        if (isCompacting) {
+            return;
+        }
+        // Do compaction
     }
 
     private void commit(TableIdentifier tableIdentifier, List<WriteResult> results) {
