@@ -132,7 +132,6 @@ public class SinkConfig extends CommonConfig {
     private final ReadonlyConfig readonlyConfig;
     private Map<String, String> autoCreateProps;
     private Map<String, String> writeProps;
-    private Map<String, String> rewriteProps;
     private List<String> primaryKeys;
     private List<String> partitionKeys;
     private String commitBranch;
@@ -148,7 +147,6 @@ public class SinkConfig extends CommonConfig {
         this.readonlyConfig = readonlyConfig;
         this.autoCreateProps = readonlyConfig.get(AUTO_CREATE_PROPS);
         this.writeProps = readonlyConfig.get(WRITE_PROPS);
-        this.rewriteProps = readonlyConfig.get();
         this.primaryKeys = stringToList(readonlyConfig.get(TABLE_PRIMARY_KEYS), ",");
         this.partitionKeys = stringToList(readonlyConfig.get(TABLE_DEFAULT_PARTITION_KEYS), ",");
         this.upsertModeEnabled = readonlyConfig.get(TABLE_UPSERT_MODE_ENABLED_PROP);

@@ -17,16 +17,26 @@
 
 package org.apache.seatunnel.connectors.seatunnel.iceberg.source.enumerator;
 
+import org.apache.seatunnel.shade.com.google.common.collect.Lists;
+import org.apache.seatunnel.shade.com.google.common.collect.Sets;
+
+import org.apache.seatunnel.api.source.SourceEvent;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.TablePath;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.config.SourceConfig;
+import org.apache.seatunnel.connectors.seatunnel.iceberg.data.CompactionAckSourceEvent;
+import org.apache.seatunnel.connectors.seatunnel.iceberg.data.CompactionSourceEvent;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.source.enumerator.scan.IcebergScanContext;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.source.enumerator.scan.IcebergScanSplitPlanner;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.source.split.IcebergFileScanTaskSplit;
 
 import org.apache.commons.lang3.tuple.Pair;
+import org.apache.iceberg.CombinedScanTask;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.io.CloseableIterator;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -39,6 +49,8 @@ import java.util.Set;
 
 @Slf4j
 public class IcebergBatchSplitEnumerator extends AbstractSplitEnumerator {
+
+    private Set<Integer> FINISHED_TASKS = Sets.newConcurrentHashSet();
 
     public IcebergBatchSplitEnumerator(
             Context<IcebergFileScanTaskSplit> context,
@@ -91,14 +103,62 @@ public class IcebergBatchSplitEnumerator extends AbstractSplitEnumerator {
         }
     }
 
+    @Override
+    public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        if (sourceEvent instanceof CompactionSourceEvent) {
+            CompactionSourceEvent compactionSourceEvent = (CompactionSourceEvent) sourceEvent;
+            FINISHED_TASKS.add(subtaskId);
+            TablePath tablePath = getFirstTablePath();
+            Table table = loadTable(tablePath);
+            long startingSnapshotId = table.currentSnapshot().snapshotId();
+            if (context.currentParallelism() == FINISHED_TASKS.size()) {
+                Pair<Schema, Schema> tableSchemaProjection = tableSchemaProjections.get(tablePath);
+                IcebergScanContext scanContext =
+                        getIcebergScanContext(tablePath, tableSchemaProjection);
+                CloseableIterator<CombinedScanTask> combinedScanTasks =
+                        IcebergScanSplitPlanner.planTasks(table, scanContext).iterator();
+                List<Long> sequenceNumbers = Lists.newArrayList();
+                while (combinedScanTasks.hasNext()) {
+                    CombinedScanTask combinedScanTask = combinedScanTasks.next();
+                    for (FileScanTask fileScanTask : combinedScanTask.files()) {
+                        DataFile dataFile = fileScanTask.file();
+                        sequenceNumbers.add(dataFile.fileSequenceNumber());
+                    }
+                }
+
+                context.sendEventToSourceReader(
+                        subtaskId,
+                        new CompactionAckSourceEvent(
+                                false,
+                                sequenceNumbers.toArray(new Long[sequenceNumbers.size()]),
+                                tablePath,
+                                startingSnapshotId));
+            } else {
+                context.sendEventToSourceReader(
+                        subtaskId,
+                        new CompactionAckSourceEvent(true, null, tablePath, startingSnapshotId));
+            }
+        }
+    }
+
+    private TablePath getFirstTablePath() {
+        return tables.keySet().iterator().next();
+    }
+
     private List<IcebergFileScanTaskSplit> loadSplits(TablePath tablePath) {
         Table table = loadTable(tablePath);
         Pair<Schema, Schema> tableSchemaProjection = tableSchemaProjections.get(tablePath);
+        IcebergScanContext scanContext = getIcebergScanContext(tablePath, tableSchemaProjection);
+        return IcebergScanSplitPlanner.planSplits(table, scanContext);
+    }
+
+    private IcebergScanContext getIcebergScanContext(
+            TablePath tablePath, Pair<Schema, Schema> tableSchemaProjection) {
         IcebergScanContext scanContext =
                 IcebergScanContext.scanContext(
                         sourceConfig,
                         sourceConfig.getTableConfig(tablePath),
                         tableSchemaProjection.getRight());
-        return IcebergScanSplitPlanner.planSplits(table, scanContext);
+        return scanContext;
     }
 }

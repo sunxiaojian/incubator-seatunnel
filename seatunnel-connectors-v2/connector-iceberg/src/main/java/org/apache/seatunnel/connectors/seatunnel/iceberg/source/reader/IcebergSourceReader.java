@@ -19,13 +19,17 @@ package org.apache.seatunnel.connectors.seatunnel.iceberg.source.reader;
 
 import org.apache.seatunnel.api.source.Boundedness;
 import org.apache.seatunnel.api.source.Collector;
+import org.apache.seatunnel.api.source.SourceEvent;
 import org.apache.seatunnel.api.source.SourceReader;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.TablePath;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.IcebergCatalogLoader;
+import org.apache.seatunnel.connectors.seatunnel.iceberg.compaction.IcebergCompactionHandler;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.config.SourceConfig;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.config.SourceTableConfig;
+import org.apache.seatunnel.connectors.seatunnel.iceberg.data.CompactionAckSourceEvent;
+import org.apache.seatunnel.connectors.seatunnel.iceberg.data.CompactionSourceEvent;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.data.DefaultDeserializer;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.data.Deserializer;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.source.split.IcebergFileScanTaskSplit;
@@ -65,6 +69,8 @@ public class IcebergSourceReader implements SourceReader<SeaTunnelRow, IcebergFi
 
     private Catalog catalog;
     private ConcurrentMap<TablePath, IcebergFileScanTaskSplitReader> tableReaders;
+
+    private CompactionAckSourceEvent compactionAckSourceEvent;
 
     public IcebergSourceReader(
             @NonNull SourceReader.Context context,
@@ -148,7 +154,20 @@ public class IcebergSourceReader implements SourceReader<SeaTunnelRow, IcebergFi
         }
 
         if (noMoreSplitsAssignment && Boundedness.BOUNDED.equals(context.getBoundedness())) {
-            context.signalNoMoreElement();
+            if (sourceConfig.isCompactionAction()) {
+                context.sendSourceEventToEnumerator(new CompactionSourceEvent());
+                while (true) {
+                    if (compactionAckSourceEvent != null) {
+                        IcebergCompactionHandler.emitCompactionEndRecord(
+                                output, compactionAckSourceEvent);
+                        break;
+                    }
+                    Thread.sleep(1000);
+                }
+                context.signalNoMoreElement();
+            } else {
+                context.signalNoMoreElement();
+            }
         } else {
             context.sendSplitRequest();
             if (pendingSplits.isEmpty()) {
@@ -167,6 +186,13 @@ public class IcebergSourceReader implements SourceReader<SeaTunnelRow, IcebergFi
             readerState.add(currentReadSplit);
         }
         return readerState;
+    }
+
+    @Override
+    public void handleSourceEvent(SourceEvent sourceEvent) {
+        if (sourceEvent instanceof CompactionAckSourceEvent) {
+            this.compactionAckSourceEvent = (CompactionAckSourceEvent) sourceEvent;
+        }
     }
 
     @Override

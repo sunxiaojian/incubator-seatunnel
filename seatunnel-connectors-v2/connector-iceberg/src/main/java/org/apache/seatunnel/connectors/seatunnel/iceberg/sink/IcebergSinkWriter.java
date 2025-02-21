@@ -32,6 +32,7 @@ import org.apache.seatunnel.api.table.schema.handler.DataTypeChangeEventHandler;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.api.table.type.SeaTunnelRowType;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.IcebergTableLoader;
+import org.apache.seatunnel.connectors.seatunnel.iceberg.compaction.IcebergCompactionHandler;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.config.SinkConfig;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.sink.commit.IcebergCommitInfo;
 import org.apache.seatunnel.connectors.seatunnel.iceberg.sink.commit.IcebergFilesCommitter;
@@ -41,6 +42,8 @@ import org.apache.seatunnel.connectors.seatunnel.iceberg.sink.writer.RecordWrite
 import org.apache.seatunnel.connectors.seatunnel.iceberg.sink.writer.WriteResult;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.io.FileIO;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -61,12 +64,15 @@ public class IcebergSinkWriter
     private SeaTunnelRowType rowType;
     private final SinkConfig config;
     private final IcebergTableLoader icebergTableLoader;
+    private final Table table;
+    private final FileIO fileIO;
     private volatile RecordWriter writer;
     private final IcebergFilesCommitter filesCommitter;
     private final List<WriteResult> results = Lists.newArrayList();
     private String commitUser = UUID.randomUUID().toString();
 
     private final DataTypeChangeEventHandler dataTypeChangeEventHandler;
+    private IcebergCompactionHandler compactionHandler;
 
     public IcebergSinkWriter(
             IcebergTableLoader icebergTableLoader,
@@ -75,10 +81,15 @@ public class IcebergSinkWriter
             List<IcebergSinkState> states) {
         this.config = config;
         this.icebergTableLoader = icebergTableLoader;
+        this.table = icebergTableLoader.loadTable();
+        this.fileIO = this.table.io();
         this.tableSchema = tableSchema;
         this.rowType = tableSchema.toPhysicalRowDataType();
         this.filesCommitter = IcebergFilesCommitter.of(config, icebergTableLoader);
         this.dataTypeChangeEventHandler = new DataTypeChangeEventDispatcher();
+        if (config.isCompactionAction()) {
+            compactionHandler = new IcebergCompactionHandler(table, fileIO, writer);
+        }
         if (Objects.nonNull(states) && !states.isEmpty()) {
             this.commitUser = states.get(0).getCommitUser();
             preCommit(states);
@@ -114,11 +125,19 @@ public class IcebergSinkWriter
     @Override
     public void write(SeaTunnelRow element) throws IOException {
         tryCreateRecordWriter();
+        if (compactionHandler.isCompactionEndRecord(element)) {
+            compactionHandler.doCompaction(element);
+            return;
+        }
         writer.write(element, rowType);
     }
 
     @Override
     public Optional<IcebergCommitInfo> prepareCommit() throws IOException {
+        if (config.isCompactionAction()) {
+            //  Unsupported.
+            return Optional.empty();
+        }
         List<WriteResult> writeResults;
         if (writer != null) {
             writeResults = writer.complete();
