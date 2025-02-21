@@ -40,7 +40,6 @@ public class IcebergFilesCommitter implements Serializable {
     private IcebergTableLoader icebergTableLoader;
     private boolean caseSensitive;
     private String branch;
-    private Boolean isCompacting = false;
 
     private IcebergFilesCommitter(SinkConfig config, IcebergTableLoader icebergTableLoader) {
         this.icebergTableLoader = icebergTableLoader;
@@ -55,32 +54,30 @@ public class IcebergFilesCommitter implements Serializable {
 
     public void doCommit(List<WriteResult> results) {
         TableIdentifier tableIdentifier = icebergTableLoader.getTableIdentifier();
-        commit(tableIdentifier, results);
-        doCompaction();
-    }
-
-    private void doCompaction() {
-        if (isCompacting) {
-            return;
-        }
-        // Do compaction
-    }
-
-    private void commit(TableIdentifier tableIdentifier, List<WriteResult> results) {
         List<DataFile> dataFiles =
                 results.stream()
                         .filter(payload -> payload.getDataFiles() != null)
                         .flatMap(payload -> payload.getDataFiles().stream())
                         .filter(dataFile -> dataFile.recordCount() > 0)
                         .collect(toList());
-
         List<DeleteFile> deleteFiles =
                 results.stream()
                         .filter(payload -> payload.getDeleteFiles() != null)
                         .flatMap(payload -> payload.getDeleteFiles().stream())
                         .filter(deleteFile -> deleteFile.recordCount() > 0)
                         .collect(toList());
+        commit(tableIdentifier, dataFiles, deleteFiles);
+    }
 
+    public void doCommit(List<DataFile> dataFiles, List<DeleteFile> deleteFiles) {
+        TableIdentifier tableIdentifier = icebergTableLoader.getTableIdentifier();
+        commit(tableIdentifier, dataFiles, deleteFiles);
+    }
+
+    private void commit(
+            TableIdentifier tableIdentifier,
+            List<DataFile> dataFiles,
+            List<DeleteFile> deleteFiles) {
         if (dataFiles.isEmpty() && deleteFiles.isEmpty()) {
             log.info(String.format("Nothing to commit to table %s, skipping", tableIdentifier));
         } else {

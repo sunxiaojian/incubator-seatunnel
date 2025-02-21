@@ -186,7 +186,7 @@ public class IcebergScanSplitPlanner {
         }
     }
 
-    private static CloseableIterable<CombinedScanTask> planTasks(
+    public static CloseableIterable<CombinedScanTask> planTasks(
             Table table, IcebergScanContext context) {
         if (context.isStreaming()
                 || context.getStartSnapshotId() != null
